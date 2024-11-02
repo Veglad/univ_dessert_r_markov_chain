@@ -14,48 +14,72 @@ source("MFMC_helper.R")
 ################################### Start main script ################################### *** Custom logic ***
 ###### Manual fill 
 ITERATIONS_COUNT <- 10^4
-basic_states <- list('Su','Sd','Sh', 'Sl')
+basic_states <- list(
+  'Su', # up state
+  'Sed', # embedded diagnostics (error detected) state
+  'Sh', # hidden error state
+  'Sr', # repair state
+  'Sad', # accident (emergency) diagnostics
+  'Sl' # learning state
+)
 Su_idx <- 1
-Sd_idx <- 2
+Sed_idx <- 2
 Sh_idx <- 3
-Sl_idx <- 4
+Sr_idx <- 4
+Sad_idx <- 5
+Sl6_idx <- 6
 
-D <- 0.85 # probability of fault detection
-L <- 0.1 # probability of going to learn state after Sd fail
-lambda_d <- 10^-4 
-lambda_l <- 1/4
-m_u <- 1/4
+# Params and indicators
+lambda_d <- 10^-3 # failure rate  
+lambda_ed <- 10^3 # embedded diagnostics rate
+lambda_ad <- 1 # accident (emergency) diagnostics rate
+lambda_sd <- 0.0625 # scheduled diagnostics rate
+lambda_r <- 10 # repair rate
+lambda_l <- 2 # learning rate
+pc <- 0.95 # success control prob
+pl <- 0.7 # success learning prob
+ped <- 0.7 # probability of fault detection
+ped2 <- 0.845
+ped3 <- 0.99
 
-# |1-λd,     λd*D,  λd*(1-D), 0    |
-# |µu*(1-L), 1-µu,  0,        µu*L |
-# |0,        λd*D,  (1-D*λd), 0    |
-# |0,        0,     0,        1-λl |
+# |-λd,       λd*pc, λd(1-pc), 0,       0,           0   |
+# |0,         -λed,  0,        λed*ped, λed*(1-ped), 0   |
+# |0,         0,     -λsd,     0,       0,           λsd |
+# |0,         0,     0,        -λr      0,           λr  | 
+# |0,         0,     0,        0,       -λad,        λad | 
+# |λl*(1-pl), 0,     0,        0,       0,           λl  |
 
-transition_matrix_1fragment <-  matrix(c(1-lambda_d,lambda_d,lambda_d,0, 
-                                         m_u*(1-L),1-m_u,0,m_u*L, 
-                                         0,lambda_d,1,0, 
-                                         0,0,0,1-lambda_l),
+transition_matrix_1fragment <-  matrix(c(-lambda_d, lambda_d*pc, lambda_d*(1-pc), 0, 0, 0, 
+                                         0,-lambda_ed, 0, lambda_ed, lambda_ed, 0,
+                                         0, 0, -lambda_sd, 0, 0, lambda_sd,
+                                         0, 0, 0, -lambda_r, 0, lambda_r,
+                                         0, 0, 0, 0, -lambda_ad, lambda_ad,
+                                         lambda_l*(1-pl), 0, 0, 0, 0, -lambda_l),
                                       byrow = TRUE, length(basic_states))
-count <- 3
-link_data <- list(from = 4, to = 1, value = lambda_l)
+INITIAL_STATE <- c(1, rep(0, 16))
+count <- 3 # fragment number
+link_data <- list(from = 6, to = 1, value = lambda_l*pl) # how to use pl here? 
 
-transform_D <- linear_transform
+transform_D <- function(D, steps_count, step) {
+  result <- switch(step,
+    ped, 
+    ped2, 
+    ped3
+  )
+  return (result)
+}
 
-# Изменение фрагментов - (функция описания(как объединить параметры и изм. Параметры), параметры, изменяемый параметр, функция измерения параметра)
+# Изменение фрагментов - (функция описания(как объединить параметры и изм. Параметры), параметры, изменяемый параметр, функция измерения параметра) D - ped
 build_next_fragment <- function(basic_params, D) {
-  basic_params[Su_idx, Sd_idx] <- basic_params[Su_idx, Sd_idx] * D
-  basic_params[Su_idx, Sh_idx] <- basic_params[Su_idx, Sh_idx] * (1 - D)
-  basic_params[Sh_idx, Sd_idx] <- basic_params[Sh_idx, Sd_idx] * D
-  basic_params[Sh_idx, Sh_idx] <- 1 - basic_params[Sh_idx, Sd_idx]
-  
+  basic_params[Sed_idx, Sr_idx] <- basic_params[Sed_idx, Sr_idx] * D
+  basic_params[Sed_idx, Sad_idx] <- basic_params[Sed_idx, Sad_idx] * (1-D)
   return(basic_params)
 }
 
 # linking element will be unlinked from the fragment chain + weight will be distributed
 transform_last_fragment <- function(fragment, link_data) {
-  weight_to_distribute <- fragment[Sd_idx, Sl_idx]
-  fragment[Sd_idx, Su_idx] <- fragment[Sd_idx, Su_idx] + weight_to_distribute # add weight to Su
-  
+  fragment[Sl6_idx, Sl6_idx] <- -lambda_l
+  fragment[Sl6_idx, Su_idx] <- lambda_l
   return(fragment)
 }
 
@@ -63,193 +87,63 @@ MFMC <- generate_MFMC(transition_matrix_1fragment, basic_states, count,
                       link_data, transform_last_fragment, build_next_fragment, D, transform_D)
 
 transElms <- MFMC$final_matrix
-transElms <- transElms[1:(nrow(transElms) - 2), 1:(ncol(transElms) - 2)] # cut 2 last els, last Sh and Sl must be excluded
-all_state_labels <- MFMC$all_state_labels[1:ncol(transElms)] # cut 2 last elemetns
-INITIAL_STATE <- c(1, 0, 0, 0, 0, 0, 0 ,0 ,0 ,0) 
+# transElms <- transElms[1:(nrow(transElms) - 2), 1:(ncol(transElms) - 2)] # cut 2 last els, last Sh and Sl must be excluded
+# all_state_labels <- MFMC$all_state_labels[1:ncol(transElms)] # cut 2 last elemetns
 print(transElms)
 
-markov <- new('markovchain',
-              transitionMatrix = transElms,
-              states = all_state_labels,
-              name = "BM1")
+markov <- new('ctmc',
+              generator = transElms,
+              states = MFMC$all_state_labels,
+              name = "MEPIS Model")
+
+# Visualize
+library(DiagrammeR)
+library(igraph)
+
+# Convert the transition matrix to a graph
+g <- graph_from_adjacency_matrix(transElms, mode = "directed", weighted = TRUE)
+
+# Set vertex labels
+V(g)$name <- MFMC$all_state_labels
+
+# Plot the graph
+layout <- layout_as_tree(g)
+
+# Plot the graph with more spacing
+plot(g, 
+     layout = layout,
+     vertex.label = V(g)$name,
+     vertex.size = 10,
+     vertex.label.cex = 0.6,
+     edge.arrow.size = 0.5,
+     edge.label = round(E(g)$weight, 2),
+     edge.label.cex = 0.7,
+     main = "Continuous-Time Markov Chain",
+     vertex.label.color = "black",
+     vertex.color = "lightblue",
+     edge.color = "gray",
+     asp = 0.55) # Use rescale to avoid overlapping nodes
+
 ```
-
-## Visualize MC
-
+# Availability
 ```{r}
-x_pos <- rep(seq(0.1, 0.9, length = (2 * count)), each = 2) # 2 last elements were deleted
-x_pos <- x_pos[1:(length(x_pos)-2)] # 2 last elements were deleted
-y_pos <- rep(c(0.7, 0.3, 0.3, 0.7), times = count)
-y_pos <- y_pos[1:(length(y_pos)-2)] # 2 last elements were deleted
-plotmat(t(transElms),
-        relsize = 1,
-        pos = cbind(x_pos, y_pos), 
-        lwd = 1, # arrow shadow
-        box.lwd = 2, shadow.size = 0.003, # shadow
-        cex.txt = 0.8, # weight font size
-        box.size = 0.03, # state shape size
-        box.col = "light blue",
-        arr.width = .1, arr.length = .3, arr.pos = 0.4,
-        self.cex = .8,
-        self.shifty = -.027,
-        self.shiftx = -.045,
-        main = "Multi Fragment Markov Chain - BM1")
-```
+stationary_distribution <- steadyStates(markov)
+print(stationary_distribution)
+up_state_indecies <- c(1, 7, 13)
+availability <- sum(stationary_distribution[up_state_indecies])
 
-## Readiness function calculation
+# Print the results in a formatted table using print and paste
+cat("\nValues from the last row:\n")
+cat(sprintf("%-10s %-30s\n", "Column", "Value"))  # Header
+cat(rep("-", 40), "\n")  # Separator
 
-```{r}
-calculate_readiness <- function(state_probs_vector) {
-  indecies <- seq(1, 12, 4) # every 4 * n + 1 is the Su - up state
-  return (sum(state_probs_vector[indecies]))
-}
+# Print each value with paste
+print(paste("S2 Column:", stationary_distribution[1]))
+print(paste("S8 Column:", stationary_distribution[7]))
+print(paste("S14 Column:", stationary_distribution[13]))
+cat(rep("-", 40), "\n")
 
-#INITIAL_STATE * markov ^ i = probability vector of being at each state on the "i" step
-readiness_over_time <- sapply(0:ITERATIONS_COUNT, function(i)  calculate_readiness(INITIAL_STATE * markov ^ i)) 
-
-# plot
-#plot(readiness_over_time, ylab="A(t) - readiness function", xlab="t", type="l", col="red", lwd = 2)
-#grid(nx = NULL, ny = NULL,
-#     lty = 1,      # Grid line type
-#     col = "gray", # Grid line color
-#     lwd = 1)      # Grid line width
-```
-
-# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
-
-## BM1 without learning (BM1WL)
-
-```{r}
-# reuse 1fragment matrix without learnig step + add prob of Sl => Sd to Sd => Su
-transElms_without_learning <- transElms[1:3, 1:3] 
-transElms_without_learning[2,1] <- transElms[2,1] + transElms[2, 4]
-
-print(transElms_without_learning)
-
-markov_without_learning <- new('markovchain',
-              transitionMatrix = transElms_without_learning,
-              states = all_state_labels[1:3],
-              name = "BM1WL")
-```
-
-## Visualize BM1WL
-
-```{r}
-plotmat(t(transElms_without_learning),
-        relsize = 1,
-        pos = NULL, 
-        lwd = 1, # arrow shadow
-        box.lwd = 2, shadow.size = 0.003, # shadow
-        cex.txt = 0.8, # weight font size
-        box.size = 0.03, # state shape size
-        box.col = "light blue",
-        arr.width = .1, arr.length = .3, arr.pos = 0.4,
-        self.cex = .8,
-        self.shifty = -.027,
-        self.shiftx = -.045,
-        main = "Markov Chain - BM1 without learning")
-```
-
-### Readiness calc for BM1WL
-
-```{r}
-INITIAL_STATE_WL <- c(1, 0, 0) # Su
-calculate_readiness_wl <- function(state_probs_vector) {
-  return (state_probs_vector[1]) # take only Su - the only up state
-}
-
-readiness_over_time_wl <- sapply(0:ITERATIONS_COUNT, function(i)  calculate_readiness_wl(INITIAL_STATE_WL * markov_without_learning ^ i)) 
-
-# plot
-#plot(readiness_over_time_wl, ylab="A(t) - BM1WL readiness function", xlab="t", type="l", , col="blue", lwd = 2)
-#grid(nx = NULL, ny = NULL,
-#     lty = 1,      # Grid line type
-#     col = "gray", # Grid line color
-#     lwd = 1)      # Grid line width
-```
-
-# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
-
-## BM1 with ideal Detection (BM1ID)
-
-```{r}
-
-D_for_ideal_d <- 1
-# reuse 1fragment matrix without learnig step + add prob of Sl => Sd to Sd => Su
-transElms_ideal_d <- build_next_fragment(transition_matrix_1fragment, D_for_ideal_d)[1:3, 1:3]
-transElms_ideal_d[2,1] <- transElms[2,1] + transElms[2, 4]
-colnames(transElms_ideal_d) <- all_state_labels[1:3]
-rownames(transElms_ideal_d) <- all_state_labels[1:3]
-
-
-print(transElms_ideal_d)
-
-markov_ideal_d <- new('markovchain',
-              transitionMatrix = transElms_ideal_d,
-              states = all_state_labels[1:3],
-              name = "BM1ID")
-```
-
-## Visualize BM1ID
-
-```{r}
-plotmat(t(transElms_ideal_d),
-        relsize = 1,
-        pos = NULL, 
-        lwd = 1, # arrow shadow
-        box.lwd = 2, shadow.size = 0.003, # shadow
-        cex.txt = 0.8, # weight font size
-        box.size = 0.03, # state shape size
-        box.col = "light blue",
-        arr.width = .1, arr.length = .3, arr.pos = 0.4,
-        self.cex = .8,
-        self.shifty = -.027,
-        self.shiftx = -.045,
-        main = "Markov Chain - BM1 with ideal Detection")
-```
-
-### Readiness calc for BM1ID
-
-```{r}
-INITIAL_STATE_ID <- c(1, 0, 0) # Su
-calculate_readiness_id <- function(state_probs_vector) {
-  return (state_probs_vector[1]) # take only Su - the only up state
-}
-
-readiness_over_time_id <- sapply(0:ITERATIONS_COUNT, function(i)  calculate_readiness_id(INITIAL_STATE_ID * markov_ideal_d ^ i)) 
-
-# plot
-#plot(readiness_over_time_id, ylab="A(t) - BM1ID readiness function", xlab="t", type="l", col="green", lwd = 2)
-#grid(nx = NULL, ny = NULL,
-#     lty = 1,      # Grid line type
-#     col = "gray", # Grid line color
-#     lwd = 1)      # Grid line width
-```
-
-# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--
-
-## General readiness function
-
-```{r}
-# plot
-plot(readiness_over_time_wl, ylab="A(t)", xlab="t", type="l",col='blue') 
-grid(nx = NULL, ny = NULL, lty = 1, # Grid line type
-     col = "gray", # Grid line color 
-     lwd = 1) # Grid line width
-lines(readiness_over_time, col='red') 
-lines(readiness_over_time_id, col='green') 
-legend("right", legend=c("With learning", "Without learning", "With ideal fail detection"), col=c("red", "blue", "green"), lty=1:2, cex=0.8, xpd=TRUE, pch = c(10, 15, 1))
-```
-
-## Readiness function params calculation
-
-```{r}
-print_report_for_rediness_functions(readiness_over_time, readiness_over_time_wl)
-
-stationary_readiness_l <- calculate_readiness(steadyStates(markov))
-stationary_readiness_ideal <- calculate_readiness_id(steadyStates(markov_ideal_d))
-stationary_readiness_wl <- calculate_readiness_wl(steadyStates(markov_without_learning))
-print(paste("steady(A(t)) with learning:   ", stationary_readiness_l))
-print(paste("steady(A(t)) without learning:", stationary_readiness_wl))
-print(paste("steady(A(t)) with ideal:      ", stationary_readiness_ideal))
+# Print the sum using paste
+print(paste("Sum (availability):", availability))  # Sum
+   
 ```
