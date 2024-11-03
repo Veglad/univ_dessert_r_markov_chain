@@ -17,17 +17,17 @@ ITERATIONS_COUNT <- 10^4
 basic_states <- list(
   'Su', # up state
   'Sed', # embedded diagnostics (error detected) state
-  'Sh', # hidden error state
+  'Ssd', # hidden error state
   'Sr', # repair state
   'Sad', # accident (emergency) diagnostics
   'Sl' # learning state
 )
 Su_idx <- 1
 Sed_idx <- 2
-Sh_idx <- 3
+Ssd_idx <- 3
 Sr_idx <- 4
 Sad_idx <- 5
-Sl6_idx <- 6
+Sl_idx <- 6
 
 # Params and indicators
 lambda_d <- 10^-3 # failure rate  
@@ -39,8 +39,8 @@ lambda_l <- 2 # learning rate
 pc <- 0.95 # success control prob
 pl <- 0.7 # success learning prob
 ped <- 0.7 # probability of fault detection
-ped2 <- 0.845
-ped3 <- 0.99
+ped2 <- 0.85
+ped3 <- 1
 
 # |-λd,       λd*pc, λd(1-pc), 0,       0,           0   |
 # |0,         -λed,  0,        λed*ped, λed*(1-ped), 0   |
@@ -78,8 +78,9 @@ build_next_fragment <- function(basic_params, D) {
 
 # linking element will be unlinked from the fragment chain + weight will be distributed
 transform_last_fragment <- function(fragment, link_data) {
-  fragment[Sl6_idx, Sl6_idx] <- -lambda_l
-  fragment[Sl6_idx, Su_idx] <- lambda_l
+  fragment[Ssd_idx, Su_idx] <- fragment[Ssd_idx, Sl_idx]
+  fragment[Sr_idx, Su_idx] <- fragment[Sr_idx, Sl_idx]
+  fragment[Sad_idx, Su_idx] <- fragment[Sad_idx, Sl_idx]
   return(fragment)
 }
 
@@ -87,13 +88,13 @@ MFMC <- generate_MFMC(transition_matrix_1fragment, basic_states, count,
                       link_data, transform_last_fragment, build_next_fragment, D, transform_D)
 
 transElms <- MFMC$final_matrix
-# transElms <- transElms[1:(nrow(transElms) - 2), 1:(ncol(transElms) - 2)] # cut 2 last els, last Sh and Sl must be excluded
-# all_state_labels <- MFMC$all_state_labels[1:ncol(transElms)] # cut 2 last elemetns
+transElms <- transElms[1:(nrow(transElms) - 1), 1:(ncol(transElms) - 1)] # cut 1 last els, last Sh and Sl must be excluded
+all_state_labels <- MFMC$all_state_labels[1:ncol(transElms)] # cut 1 last elemetns
 print(transElms)
 
 markov <- new('ctmc',
               generator = transElms,
-              states = MFMC$all_state_labels,
+              states = all_state_labels,
               name = "MEPIS Model")
 
 # Visualize
@@ -104,7 +105,7 @@ library(igraph)
 g <- graph_from_adjacency_matrix(transElms, mode = "directed", weighted = TRUE)
 
 # Set vertex labels
-V(g)$name <- MFMC$all_state_labels
+V(g)$name <- all_state_labels
 
 # Plot the graph
 layout <- layout_as_tree(g)
